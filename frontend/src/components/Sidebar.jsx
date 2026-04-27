@@ -1,8 +1,49 @@
-import React, { useRef, useEffect, useState } from 'react';
-import { useJsApiLoader, Autocomplete } from '@react-google-maps/api';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import ExplainabilityPanel from './ExplainabilityPanel';
 
-const LIBRARIES = ['places'];
+/**
+ * Free autocomplete using OpenStreetMap Nominatim.
+ * No API key required.
+ */
+function useNominatimSearch(query) {
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef(null);
+
+  useEffect(() => {
+    if (query.length < 3) {
+      setResults([]);
+      return;
+    }
+
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&addressdetails=1`,
+          { headers: { 'Accept-Language': 'en' } }
+        );
+        const data = await res.json();
+        setResults(
+          data.map((item) => ({
+            name: item.display_name,
+            lat: parseFloat(item.lat),
+            lng: parseFloat(item.lon),
+          }))
+        );
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(debounceRef.current);
+  }, [query]);
+
+  return { results, loading };
+}
 
 export default function Sidebar({
   userLocation,
@@ -18,29 +59,26 @@ export default function Sidebar({
   onPredict,
 }) {
   const [destInput, setDestInput] = useState('');
-  const autocompleteRef = useRef(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const { results: suggestions, loading: searchLoading } = useNominatimSearch(destInput);
+  const wrapperRef = useRef(null);
 
-  const { isLoaded } = useJsApiLoader({
-    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '',
-    libraries: LIBRARIES,
-  });
-
-  const onAutoLoad = (autocomplete) => {
-    autocompleteRef.current = autocomplete;
-  };
-
-  const onPlaceChanged = () => {
-    if (!autocompleteRef.current) return;
-    const place = autocompleteRef.current.getPlace();
-    if (place.geometry) {
-      setDestination({
-        lat: place.geometry.location.lat(),
-        lng: place.geometry.location.lng(),
-        name: place.name || place.formatted_address || destInput,
-      });
-      setDestInput(place.name || place.formatted_address || '');
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClick(e) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target)) {
+        setShowSuggestions(false);
+      }
     }
-  };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const selectPlace = useCallback((place) => {
+    setDestination(place);
+    setDestInput(place.name.split(',').slice(0, 2).join(','));
+    setShowSuggestions(false);
+  }, [setDestination]);
 
   const statusLabel = {
     checking: { icon: '🟡', text: 'Checking backend...' },
@@ -48,7 +86,6 @@ export default function Sidebar({
     predicting: { icon: '🟡', text: 'Predicting...' },
     error: { icon: '🔴', text: 'Backend Offline (mock mode)' },
   };
-
   const status = statusLabel[backendStatus] || statusLabel.error;
 
   return (
@@ -86,28 +123,41 @@ export default function Sidebar({
             />
           </div>
           <div className="search-divider" />
-          <div className="search-row">
+          <div className="search-row" ref={wrapperRef} style={{ position: 'relative' }}>
             <div className="search-dot destination" />
-            {isLoaded ? (
-              <Autocomplete
-                onLoad={onAutoLoad}
-                onPlaceChanged={onPlaceChanged}
-                options={{ types: ['geocode', 'establishment'] }}
-              >
-                <input
-                  className="search-input"
-                  placeholder="Search a destination..."
-                  value={destInput}
-                  onChange={(e) => setDestInput(e.target.value)}
-                  style={{ width: '100%' }}
-                />
-              </Autocomplete>
-            ) : (
-              <input
-                className="search-input"
-                placeholder="Loading autocomplete..."
-                disabled
-              />
+            <input
+              className="search-input"
+              placeholder="Search a destination..."
+              value={destInput}
+              onChange={(e) => {
+                setDestInput(e.target.value);
+                setShowSuggestions(true);
+              }}
+              onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+            />
+
+            {/* Autocomplete Dropdown */}
+            {showSuggestions && (destInput.length >= 3) && (
+              <div className="autocomplete-dropdown">
+                {searchLoading && (
+                  <div className="autocomplete-item loading">Searching...</div>
+                )}
+                {!searchLoading && suggestions.length === 0 && destInput.length >= 3 && (
+                  <div className="autocomplete-item loading">No results found</div>
+                )}
+                {suggestions.map((place, idx) => (
+                  <div
+                    key={idx}
+                    className="autocomplete-item"
+                    onClick={() => selectPlace(place)}
+                  >
+                    <span className="autocomplete-icon">📍</span>
+                    <span className="autocomplete-text">
+                      {place.name.length > 60 ? place.name.slice(0, 60) + '...' : place.name}
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>
@@ -126,13 +176,13 @@ export default function Sidebar({
           <div className="traffic-comparison fade-in">
             <div className="comparison-row">
               <div className="comparison-item">
-                <span className="comparison-label">🟢 Google Traffic</span>
+                <span className="comparison-label">🟢 Current Traffic</span>
                 <span className="comparison-value">Live</span>
               </div>
               <div className="comparison-divider" />
               <div className="comparison-item">
                 <span className="comparison-label">🔮 AI Predicted (20 min)</span>
-                <span className={`comparison-value badge-${predictionData.overallCongestion.toLowerCase()}`} style={{ padding: '2px 8px', borderRadius: '8px' }}>
+                <span className={`comparison-value badge-text-${predictionData.overallCongestion.toLowerCase()}`}>
                   {predictionData.overallCongestion}
                 </span>
               </div>
@@ -174,9 +224,7 @@ export default function Sidebar({
         {predictionData && (
           <div className="prediction-card fade-in">
             <div className="prediction-header">
-              <div className="prediction-title">
-                🔮 {predictionData.predictionWindow} Ahead
-              </div>
+              <div className="prediction-title">🔮 {predictionData.predictionWindow} Ahead</div>
               <div className="prediction-confidence">
                 {(predictionData.confidence * 100).toFixed(0)}% confident
               </div>
