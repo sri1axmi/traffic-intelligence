@@ -1,18 +1,30 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Auth from './components/Auth';
-import Map from './components/Map';
+import MapView from './components/MapView';
 import Sidebar from './components/Sidebar';
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userLocation, setUserLocation] = useState(null);
   const [locationError, setLocationError] = useState('');
-  const [currentRoute, setCurrentRoute] = useState(null);
+  const [destination, setDestination] = useState(null); // { lat, lng, name }
   const [predictionData, setPredictionData] = useState(null);
-  const [selectedRouteIdx, setSelectedRouteIdx] = useState(0);
   const [routes, setRoutes] = useState([]);
+  const [selectedRouteIdx, setSelectedRouteIdx] = useState(0);
+  const [backendStatus, setBackendStatus] = useState('checking'); // checking, connected, error
+  const [predicting, setPredicting] = useState(false);
 
-  // Request geolocation on login
+  // Check backend health
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    fetch(`${BACKEND_URL}/`)
+      .then(res => res.ok ? setBackendStatus('connected') : setBackendStatus('error'))
+      .catch(() => setBackendStatus('error'));
+  }, [isAuthenticated]);
+
+  // Request geolocation
   useEffect(() => {
     if (isAuthenticated && !userLocation) {
       requestLocation();
@@ -21,25 +33,126 @@ function App() {
 
   const requestLocation = useCallback(() => {
     if (!navigator.geolocation) {
-      setLocationError('Geolocation is not supported by your browser');
+      setLocationError('Geolocation not supported');
       return;
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setUserLocation({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        });
+        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
         setLocationError('');
       },
-      (err) => {
-        setLocationError('Location access denied. Using default location.');
-        // Fallback: Hyderabad
+      () => {
+        setLocationError('Location denied — using default');
         setUserLocation({ lat: 17.385, lng: 78.4867 });
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
   }, []);
+
+  const handlePredict = useCallback(async () => {
+    if (!destination || !userLocation) return;
+    setPredicting(true);
+    setBackendStatus('predicting');
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/predict/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          city: 'auto',
+          area: destination.name || 'destination',
+          road: `${userLocation.lat},${userLocation.lng}->${destination.lat},${destination.lng}`,
+          time: new Date().toTimeString().slice(0, 5),
+        }),
+      });
+
+      if (!res.ok) throw new Error('Backend error');
+      const data = await res.json();
+
+      setPredictionData(data);
+      setBackendStatus('connected');
+
+      // Build mock routes based on real coordinates
+      const midLat = (userLocation.lat + destination.lat) / 2;
+      const midLng = (userLocation.lng + destination.lng) / 2;
+      const offset = 0.005;
+
+      setRoutes([
+        {
+          id: 1, name: 'AI-Optimal Route', congestion: data.overallCongestion === 'Low' ? 'Low' : 'Medium',
+          smartScore: 96.2, eta: `${12 + data.delay} mins`, distance: '—',
+          path: [
+            { lat: userLocation.lat, lng: userLocation.lng },
+            { lat: midLat + offset, lng: midLng - offset },
+            { lat: destination.lat, lng: destination.lng },
+          ],
+        },
+        {
+          id: 2, name: 'Fastest Route', congestion: data.overallCongestion,
+          smartScore: 88.7, eta: `${10 + data.delay} mins`, distance: '—',
+          path: [
+            { lat: userLocation.lat, lng: userLocation.lng },
+            { lat: midLat - offset, lng: midLng + offset },
+            { lat: destination.lat, lng: destination.lng },
+          ],
+        },
+        {
+          id: 3, name: 'Alternate Route', congestion: 'Low',
+          smartScore: 79.3, eta: `${18 + data.delay} mins`, distance: '—',
+          path: [
+            { lat: userLocation.lat, lng: userLocation.lng },
+            { lat: midLat, lng: midLng + offset * 2 },
+            { lat: destination.lat, lng: destination.lng },
+          ],
+        },
+      ]);
+      setSelectedRouteIdx(0);
+    } catch (err) {
+      console.error(err);
+      setBackendStatus('error');
+
+      // Fallback: show mock data even if backend is down
+      setPredictionData({
+        overallCongestion: 'Medium',
+        delay: 5,
+        confidence: 0.82,
+        predictionWindow: '20 minutes',
+        segments: [],
+        features: [
+          { name: 'Time of Day', impact: 42 },
+          { name: 'Historical Pattern', impact: 28 },
+          { name: 'Weather Conditions', impact: 18 },
+          { name: 'Road Incidents', impact: 12 },
+        ],
+      });
+
+      const midLat = (userLocation.lat + destination.lat) / 2;
+      const midLng = (userLocation.lng + destination.lng) / 2;
+      setRoutes([
+        {
+          id: 1, name: 'AI-Optimal Route', congestion: 'Low',
+          smartScore: 96.2, eta: '15 mins', distance: '—',
+          path: [
+            { lat: userLocation.lat, lng: userLocation.lng },
+            { lat: midLat + 0.005, lng: midLng - 0.005 },
+            { lat: destination.lat, lng: destination.lng },
+          ],
+        },
+        {
+          id: 2, name: 'Fastest Route', congestion: 'Medium',
+          smartScore: 88.7, eta: '12 mins', distance: '—',
+          path: [
+            { lat: userLocation.lat, lng: userLocation.lng },
+            { lat: midLat - 0.005, lng: midLng + 0.005 },
+            { lat: destination.lat, lng: destination.lng },
+          ],
+        },
+      ]);
+      setSelectedRouteIdx(0);
+    } finally {
+      setPredicting(false);
+    }
+  }, [destination, userLocation]);
 
   if (!isAuthenticated) {
     return <Auth onLogin={() => setIsAuthenticated(true)} />;
@@ -50,22 +163,23 @@ function App() {
       <Sidebar
         userLocation={userLocation}
         locationError={locationError}
-        currentRoute={currentRoute}
-        setCurrentRoute={setCurrentRoute}
+        destination={destination}
+        setDestination={setDestination}
         predictionData={predictionData}
-        setPredictionData={setPredictionData}
         routes={routes}
-        setRoutes={setRoutes}
         selectedRouteIdx={selectedRouteIdx}
         setSelectedRouteIdx={setSelectedRouteIdx}
+        backendStatus={backendStatus}
+        predicting={predicting}
+        onPredict={handlePredict}
       />
       <div className="map-container">
-        <Map
+        <MapView
           userLocation={userLocation}
-          currentRoute={currentRoute}
-          predictionData={predictionData}
+          destination={destination}
           routes={routes}
           selectedRouteIdx={selectedRouteIdx}
+          predictionData={predictionData}
           onLocate={requestLocation}
         />
       </div>

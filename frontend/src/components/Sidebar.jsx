@@ -1,106 +1,55 @@
-import React, { useState } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
+import { useJsApiLoader, Autocomplete } from '@react-google-maps/api';
 import ExplainabilityPanel from './ExplainabilityPanel';
+
+const LIBRARIES = ['places'];
 
 export default function Sidebar({
   userLocation,
   locationError,
-  currentRoute,
-  setCurrentRoute,
+  destination,
+  setDestination,
   predictionData,
-  setPredictionData,
   routes,
-  setRoutes,
   selectedRouteIdx,
   setSelectedRouteIdx,
+  backendStatus,
+  predicting,
+  onPredict,
 }) {
-  const [source, setSource] = useState('');
-  const [destination, setDestination] = useState('');
-  const [time, setTime] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [destInput, setDestInput] = useState('');
+  const autocompleteRef = useRef(null);
 
-  // Auto-fill source when location is available
-  React.useEffect(() => {
-    if (userLocation && !source) {
-      setSource(`${userLocation.lat.toFixed(4)}, ${userLocation.lng.toFixed(4)}`);
-    }
-  }, [userLocation]);
+  const { isLoaded } = useJsApiLoader({
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '',
+    libraries: LIBRARIES,
+  });
 
-  const handlePredict = () => {
-    if (!destination.trim()) return;
-    setLoading(true);
-
-    // Simulate API call to /predict and /route
-    setTimeout(() => {
-      const baseLat = userLocation ? userLocation.lat : 17.385;
-      const baseLng = userLocation ? userLocation.lng : 78.4867;
-
-      const mockRoutes = [
-        {
-          id: 1,
-          name: 'AI-Optimal Route',
-          coordinates: [
-            [baseLat, baseLng],
-            [baseLat + 0.008, baseLng + 0.006],
-            [baseLat + 0.018, baseLng + 0.015],
-          ],
-          eta: '12 mins',
-          distance: '3.1 km',
-          smartScore: 96.2,
-          congestion: 'Low',
-        },
-        {
-          id: 2,
-          name: 'Fastest Route',
-          coordinates: [
-            [baseLat, baseLng],
-            [baseLat + 0.012, baseLng + 0.003],
-            [baseLat + 0.018, baseLng + 0.015],
-          ],
-          eta: '10 mins',
-          distance: '2.8 km',
-          smartScore: 88.7,
-          congestion: 'Medium',
-        },
-        {
-          id: 3,
-          name: 'Alternate Route',
-          coordinates: [
-            [baseLat, baseLng],
-            [baseLat + 0.005, baseLng + 0.012],
-            [baseLat + 0.018, baseLng + 0.015],
-          ],
-          eta: '16 mins',
-          distance: '3.8 km',
-          smartScore: 79.3,
-          congestion: 'Low',
-        },
-      ];
-
-      const mockPrediction = {
-        overallCongestion: 'Medium',
-        delay: 4,
-        confidence: 0.87,
-        predictionWindow: '20 minutes',
-        segments: [
-          { location: [baseLat + 0.003, baseLng + 0.002], congestionLevel: 'Low' },
-          { location: [baseLat + 0.010, baseLng + 0.008], congestionLevel: 'High' },
-          { location: [baseLat + 0.016, baseLng + 0.013], congestionLevel: 'Low' },
-        ],
-        features: [
-          { name: 'Time of Day', impact: 42 },
-          { name: 'Historical Pattern', impact: 28 },
-          { name: 'Weather Conditions', impact: 18 },
-          { name: 'Road Incidents', impact: 12 },
-        ],
-      };
-
-      setRoutes(mockRoutes);
-      setCurrentRoute(mockRoutes[0]);
-      setPredictionData(mockPrediction);
-      setSelectedRouteIdx(0);
-      setLoading(false);
-    }, 1200);
+  const onAutoLoad = (autocomplete) => {
+    autocompleteRef.current = autocomplete;
   };
+
+  const onPlaceChanged = () => {
+    if (!autocompleteRef.current) return;
+    const place = autocompleteRef.current.getPlace();
+    if (place.geometry) {
+      setDestination({
+        lat: place.geometry.location.lat(),
+        lng: place.geometry.location.lng(),
+        name: place.name || place.formatted_address || destInput,
+      });
+      setDestInput(place.name || place.formatted_address || '');
+    }
+  };
+
+  const statusLabel = {
+    checking: { icon: '🟡', text: 'Checking backend...' },
+    connected: { icon: '🟢', text: 'Backend Connected' },
+    predicting: { icon: '🟡', text: 'Predicting...' },
+    error: { icon: '🔴', text: 'Backend Offline (mock mode)' },
+  };
+
+  const status = statusLabel[backendStatus] || statusLabel.error;
 
   return (
     <div className="sidebar">
@@ -110,19 +59,19 @@ export default function Sidebar({
       </div>
 
       <div className="sidebar-content">
-        {/* Location Status */}
+        {/* System Status */}
+        <div className="status-bar">
+          <span>{status.icon}</span>
+          <span>{status.text}</span>
+        </div>
+
+        {/* Location Banner */}
         {locationError ? (
-          <div className="location-banner error">
-            ⚠ {locationError}
-          </div>
+          <div className="location-banner error">⚠ {locationError}</div>
         ) : userLocation ? (
-          <div className="location-banner">
-            📍 Location detected
-          </div>
+          <div className="location-banner">📍 Location detected</div>
         ) : (
-          <div className="location-banner">
-            ⏳ Getting your location...
-          </div>
+          <div className="location-banner">⏳ Getting your location...</div>
         )}
 
         {/* Search Box */}
@@ -132,42 +81,67 @@ export default function Sidebar({
             <input
               className="search-input"
               placeholder="Your location"
-              value={source}
-              onChange={(e) => setSource(e.target.value)}
+              value={userLocation ? `${userLocation.lat.toFixed(4)}, ${userLocation.lng.toFixed(4)}` : ''}
+              readOnly
             />
           </div>
           <div className="search-divider" />
           <div className="search-row">
             <div className="search-dot destination" />
-            <input
-              className="search-input"
-              placeholder="Choose destination"
-              value={destination}
-              onChange={(e) => setDestination(e.target.value)}
-            />
+            {isLoaded ? (
+              <Autocomplete
+                onLoad={onAutoLoad}
+                onPlaceChanged={onPlaceChanged}
+                options={{ types: ['geocode', 'establishment'] }}
+              >
+                <input
+                  className="search-input"
+                  placeholder="Search a destination..."
+                  value={destInput}
+                  onChange={(e) => setDestInput(e.target.value)}
+                  style={{ width: '100%' }}
+                />
+              </Autocomplete>
+            ) : (
+              <input
+                className="search-input"
+                placeholder="Loading autocomplete..."
+                disabled
+              />
+            )}
           </div>
-        </div>
-
-        {/* Time Picker */}
-        <div className="time-row">
-          <span className="time-icon">🕐</span>
-          <input
-            className="time-input"
-            type="time"
-            value={time}
-            onChange={(e) => setTime(e.target.value)}
-            placeholder="Departure time"
-          />
         </div>
 
         {/* Predict Button */}
         <button
           className="btn-primary"
-          onClick={handlePredict}
-          disabled={loading || !destination.trim()}
+          onClick={onPredict}
+          disabled={predicting || !destination}
         >
-          {loading ? '🔄 Predicting traffic in 20 min...' : '🔮 Predict & Find Best Route'}
+          {predicting ? '🔄 Predicting traffic in 20 min...' : '🔮 Predict & Find Best Route'}
         </button>
+
+        {/* Traffic Comparison */}
+        {predictionData && (
+          <div className="traffic-comparison fade-in">
+            <div className="comparison-row">
+              <div className="comparison-item">
+                <span className="comparison-label">🟢 Google Traffic</span>
+                <span className="comparison-value">Live</span>
+              </div>
+              <div className="comparison-divider" />
+              <div className="comparison-item">
+                <span className="comparison-label">🔮 AI Predicted (20 min)</span>
+                <span className={`comparison-value badge-${predictionData.overallCongestion.toLowerCase()}`} style={{ padding: '2px 8px', borderRadius: '8px' }}>
+                  {predictionData.overallCongestion}
+                </span>
+              </div>
+            </div>
+            <div className="prediction-delay">
+              ⏱ Predicted delay: +{predictionData.delay} mins
+            </div>
+          </div>
+        )}
 
         {/* Route Results */}
         {routes.length > 0 && (
@@ -177,10 +151,7 @@ export default function Sidebar({
               <div
                 key={route.id}
                 className={`route-card ${idx === selectedRouteIdx ? 'active' : ''}`}
-                onClick={() => {
-                  setSelectedRouteIdx(idx);
-                  setCurrentRoute(route);
-                }}
+                onClick={() => setSelectedRouteIdx(idx)}
               >
                 <div className={`route-icon ${idx === 0 ? 'best' : 'alt'}`}>
                   {idx === 0 ? '★' : '→'}
@@ -188,7 +159,7 @@ export default function Sidebar({
                 <div className="route-info">
                   <div className="route-name">{route.name}</div>
                   <div className="route-meta">
-                    {route.distance} • {route.eta} • Score: {route.smartScore}
+                    {route.eta} • Score: {route.smartScore}
                   </div>
                 </div>
                 <span className={`route-badge badge-${route.congestion.toLowerCase()}`}>
@@ -199,7 +170,7 @@ export default function Sidebar({
           </div>
         )}
 
-        {/* Prediction Summary */}
+        {/* Prediction confidence */}
         {predictionData && (
           <div className="prediction-card fade-in">
             <div className="prediction-header">
@@ -209,9 +180,6 @@ export default function Sidebar({
               <div className="prediction-confidence">
                 {(predictionData.confidence * 100).toFixed(0)}% confident
               </div>
-            </div>
-            <div className="prediction-delay">
-              ⏱ Predicted delay: +{predictionData.delay} mins on selected route
             </div>
           </div>
         )}
